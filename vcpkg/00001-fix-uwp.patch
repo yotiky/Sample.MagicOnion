@@ -1,0 +1,99 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 51eb38c9e4..af8d04b374 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -93,6 +93,9 @@ if(UNIX)
+ endif()
+ if(WIN32)
+   set(_gRPC_PLATFORM_WINDOWS ON)
++  if(CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
++    set(_gRPC_PLATFORM_UWP ON)
++  endif()
+ endif()
+ 
+ set(CMAKE_POSITION_INDEPENDENT_CODE TRUE)
+@@ -108,6 +111,9 @@ if (MSVC)
+   set(_gRPC_C_CXX_FLAGS "${_gRPC_C_CXX_FLAGS} /wd4267")
+   # TODO(jtattermusch): needed to build boringssl with VS2017, revisit later
+   set(_gRPC_C_CXX_FLAGS "${_gRPC_C_CXX_FLAGS} /wd4987 /wd4774 /wd4819 /wd4996 /wd4619")
++  if(_gRPC_PLATFORM_UWP)
++    add_definitions(-DGRPC_ARES=0)
++  endif()
+ endif()
+ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${_gRPC_C_CXX_FLAGS}")
+ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${_gRPC_C_CXX_FLAGS}")
+@@ -175,6 +181,10 @@ file(MAKE_DIRECTORY ${_gRPC_PROTO_GENS_DIR})
+ #     ``.proto`` files
+ #
+ function(protobuf_generate_grpc_cpp)
++  if(_gRPC_PLATFORM_UWP)
++    return()
++  endif()
++
+   if(NOT ARGN)
+     message(SEND_ERROR "Error: PROTOBUF_GENERATE_GRPC_CPP() called without any proto files")
+     return()
+@@ -216,6 +226,7 @@ function(protobuf_generate_grpc_cpp)
+   endforeach()
+ endfunction()
+ 
++if(NOT _gRPC_PLATFORM_UWP)
+ add_custom_target(plugins
+   DEPENDS
+   grpc_cpp_plugin
+@@ -244,6 +255,7 @@ add_custom_target(tools_cxx
+ 
+ add_custom_target(tools
+   DEPENDS tools_c tools_cxx)
++endif()
+ 
+ if (gRPC_BUILD_TESTS)
+ add_custom_target(buildtests_c)
+diff --git a/src/core/lib/iomgr/resource_quota.cc b/src/core/lib/iomgr/resource_quota.cc
+index ce982a6410..61bf01eaec 100644
+--- a/src/core/lib/iomgr/resource_quota.cc
++++ b/src/core/lib/iomgr/resource_quota.cc
+@@ -940,7 +940,7 @@ bool grpc_resource_user_alloc(grpc_resource_user* resource_user, size_t size,
+ void grpc_resource_user_free(grpc_resource_user* resource_user, size_t size) {
+   gpr_mu_lock(&resource_user->mu);
+   grpc_resource_quota* resource_quota = resource_user->resource_quota;
+-  gpr_atm prior = gpr_atm_no_barrier_fetch_add(&resource_quota->used, -size);
++  gpr_atm prior = gpr_atm_no_barrier_fetch_add(&resource_quota->used, -static_cast<gpr_atm>(size));  
+   GPR_ASSERT(prior >= static_cast<long>(size));
+   bool was_zero_or_negative = resource_user->free_pool <= 0;
+   resource_user->free_pool += static_cast<int64_t>(size);
+diff --git a/src/core/lib/security/credentials/alts/check_gcp_environment_windows.cc b/src/core/lib/security/credentials/alts/check_gcp_environment_windows.cc
+index 55efe0e9dd..37e620dff9 100644
+--- a/src/core/lib/security/credentials/alts/check_gcp_environment_windows.cc
++++ b/src/core/lib/security/credentials/alts/check_gcp_environment_windows.cc
+@@ -60,6 +60,8 @@ bool check_bios_data(const char* bios_data_file) {
+ 
+ static void init_mu(void) { gpr_mu_init(&g_mu); }
+ 
++#if !defined(WINAPI_FAMILY) || WINAPI_FAMILY == WINAPI_FAMILY_DESKTOP_APP
++
+ static bool run_powershell() {
+   SECURITY_ATTRIBUTES sa;
+   sa.nLength = sizeof(sa);
+@@ -98,7 +100,13 @@ static bool run_powershell() {
+   return true;
+ }
+ 
++#endif
++
++
+ bool grpc_alts_is_running_on_gcp() {
++#if defined(WINAPI_FAMILY) && (WINAPI_FAMILY != WINAPI_FAMILY_DESKTOP_APP)
++  g_is_on_compute_engine = false;
++#else
+   gpr_once_init(&g_once, init_mu);
+   gpr_mu_lock(&g_mu);
+   if (!g_compute_engine_detection_done) {
+@@ -108,6 +116,7 @@ bool grpc_alts_is_running_on_gcp() {
+     g_compute_engine_detection_done = true;
+   }
+   gpr_mu_unlock(&g_mu);
++#endif
+   return g_is_on_compute_engine;
+ }
+
